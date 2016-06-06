@@ -1,0 +1,236 @@
+/*
+ * =====================================================================================
+ *
+ *       Filename:  test_log.cpp
+ *
+ *    Description:  for test log
+ *
+ *        Version:  1.0
+ *        Created:  2016年04月18日 13时05分25秒
+ *       Revision:  none
+ *       Compiler:  clang++
+ *
+ *         Author:  zhengwei (zhengwei@douyu.tv)
+ *		  Company:  武汉斗鱼网络科技有限公司
+ *
+ * =====================================================================================
+ */
+
+#include <textlog/textlog.h>
+#include <Common/DistTextLog.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+#include <boost/timer.hpp>
+#include <boost/thread.hpp>
+#include <boost/asio.hpp>
+#include <boost/date_time/posix_time/posix_time.hpp>
+
+
+void time_now(char *buf,int size);
+
+void test_tl_fast_log(TextLogSplitTime t,int loop_count);
+
+void test_stt_error_log(const char *filename,int loop_count);
+
+boost::mutex g_mutex;
+
+bool g_canrun = false;
+
+char g_filename[200];
+
+const char * text_log = "this is a very long log text";
+const int uid = 123456;
+
+
+void test_run_by_time(int timespan,int choice);
+void timer_handler(const boost::system::error_code& err,boost::asio::deadline_timer *t,int timespan);
+void writelog(const char* filename);
+void end_write_fast_log(const boost::system::error_code& err);
+
+bool is_can_run();
+
+void time_now(char *buf,int size);
+void change_filename(char *filename);
+
+int main(int argc, char *argv[])
+{
+    int choice = atoi(argv[1]);
+    int timespan = atoi(argv[2]);
+
+    /*
+    boost::function<void(int)> func;
+    if(choice==1){
+        func = &test_tl_fast_log;
+    }else{
+        func = &test_stt_error_log;
+    }
+
+
+    int count = 200000;
+    dy::common::LogSyncConfig & config =  dy::common::LogSyncConfig::get_mutable_instance();
+
+    config.set_server_id(280001);
+    config.set_server_name("token");
+
+    boost::timer t;
+
+    while (count--)
+    {
+        func(count);
+        //test_tl_fast_log(count);
+        //test_stt_error_log(count);
+    }
+
+    // getchar();
+    Text_Log_Cache * cache = Text_Log_Cache::get_cache_ins();
+    cache->flash_cache();
+    printf("time elapsed:%lf\n",t.elapsed());
+    */
+
+    test_run_by_time(timespan,choice);
+
+    return 0;
+}
+
+void test_tl_fast_log(TextLogSplitTime t,int loop_count)
+{
+    TL_FAST_LOG("./log/test.log", t, "test:%s count:%d uid:%d",
+            text_log, loop_count, uid);
+}
+
+void test_stt_error_log(const char *filename,int loop_count)
+{
+    int result = 0;
+    STT_ERROR_LOG(result, filename, STT_ADD_KEY_LOG("count", loop_count, "uid", uid),
+            "test:%s", text_log);
+}
+
+//timespan:1min,1hour,1day
+void test_run_by_time(int timespan,int choice)
+{
+    boost::asio::io_service service;
+
+    g_mutex.lock();
+    g_canrun = true;
+    g_mutex.unlock();
+
+    //fast_log
+    if(choice==1){
+        printf("test_tl_fast_log,timesep:%ds\n",timespan);
+        TextLogSplitTime t_gap;
+        switch(timespan){
+            case 60:t_gap = tlstMinute;
+                    break;
+            case 3600:t_gap = tlstHour;
+                    break;
+            case 86400:t_gap = tlstDay;
+                   break;
+        }
+
+
+        //timer to shutdown
+        boost::asio::deadline_timer t(service,boost::posix_time::seconds(timespan));
+        t.async_wait(boost::bind(end_write_fast_log,boost::asio::placeholders::error));
+
+        int count = 200000;
+        while(is_can_run()){
+            test_tl_fast_log(t_gap,count);
+        }
+        printf("stopped...\n");
+
+    }else if(choice==2){//test_error_log
+        printf("test_stt_error_log,timesep:%ds\n",timespan);
+
+        boost::asio::deadline_timer t(service,boost::posix_time::milliseconds(1));
+        t.async_wait(boost::bind(timer_handler,boost::asio::placeholders::error,&t,timespan));
+
+    }else{
+        printf("ERROR:no such choice!\n");
+    }
+
+    service.run();
+}
+
+void end_write_fast_log(const boost::system::error_code &err)
+{
+    if(!err){
+        //boost::lock_guard<boost::mutex> lck(g_mutex);
+        g_mutex.lock();
+        g_canrun = false;
+        g_mutex.unlock();
+
+        Text_Log_Cache *cache = Text_Log_Cache::get_cache_ins();
+        cache->flash_cache();
+
+    }else{
+        printf("ERROR:%s\n",err.message().c_str());
+    }
+}
+
+//处理文件名
+void timer_handler(const boost::system::error_code& err,boost::asio::deadline_timer *t,int timespan)
+{
+    if(!err){
+        change_filename(g_filename);
+        //reset timer
+        t->expires_from_now(boost::posix_time::seconds(timespan));
+        t->async_wait(boost::bind(timer_handler,boost::asio::placeholders::error,t,timespan));
+        //run write log
+        g_canrun = true;
+        while(is_can_run()){
+            test_stt_error_log(g_filename,200);
+        }
+        //writelog(g_filename);
+        //boost::thread(writelog,g_filename);
+
+    }else{
+        printf("ERROR:%s\n",err.message().c_str());
+    }
+}
+
+bool is_can_run()
+{
+    bool ret = false;
+    boost::lock_guard<boost::mutex> lck(g_mutex);
+    ret = g_canrun;
+    return ret;
+}
+
+void writelog(const char *filename)
+{
+    //check flag
+    int count = 200000;
+
+    while(is_can_run()){
+        test_stt_error_log(filename,count);
+    }
+    //exit
+    Text_Log_Cache *cache = Text_Log_Cache::get_cache_ins();
+    cache->flash_cache();
+
+    //reset
+    boost::lock_guard<boost::mutex> lck(g_mutex);
+    g_canrun = true;
+}
+
+void change_filename(char *filename)
+{
+    boost::lock_guard<boost::mutex> lck(g_mutex);
+    g_canrun = false;
+    time_now(filename,30);
+    strcat(filename,".log");
+}
+
+
+void time_now(char *buf,int size)
+{
+    time_t t;
+    time(&t);
+    struct tm *pt = localtime(&t);
+
+    strftime(buf,size,"%F_%T",pt);
+}
+

@@ -1,0 +1,249 @@
+#include <boost/asio.hpp>
+#include <boost/thread.hpp>
+#include <boost/timer.hpp>
+
+#include <string>
+#include <stdlib.h>
+#include <stdio.h>
+#include <time.h>
+
+
+#include <textlog/textlog.h>
+#include <Common/DistTextLog.h>
+
+const char *text_log = "this is ERROR log.";
+
+static int MAX_COUNT = 5;
+
+void test_tl_fast_log(const std::string& filename,int t);
+//t --- no use
+void test_stt_flow_log(const std::string& filename,int t);
+
+void test_stt_debug_log(const std::string& filename,int t);
+
+void test_stt_info_log(const std::string& filename,int t);
+
+void test_stt_warn_log(const std::string& filename,int t);
+
+void test_stt_error_log(const std::string& filename,int t);
+
+void bench_stt_multi_file_write(int timepan,int timeout);
+
+void bench_fast_multi_file_write(int timepan,int timeout);
+
+class WorkThread{
+    public:
+        WorkThread(const std::string& filename,int choice,int subtype,int timespan,int timeout):
+            filename_(filename),choice_(choice),subtype_(subtype),timespan_(timespan),timeout_(timeout){
+
+                if(choice==1){
+                    func_ = test_tl_fast_log;
+
+                }else if(choice==2){
+                    switch(subtype_){
+                        case 1:func_ = test_stt_flow_log;break;
+                        case 2:func_ = test_stt_debug_log;break;
+                        case 3:func_ = test_stt_info_log;break;
+                        case 4:func_ = test_stt_warn_log;break;
+                        case 5:func_ = test_stt_error_log;break;
+                    }
+                }
+
+
+                dy::common::LogSyncConfig &config = dy::common::LogSyncConfig::get_mutable_instance();
+
+                config.set_server_id(280001);
+                config.set_server_name("token");
+
+            }
+
+    public:
+        void change()
+        {
+            char buf[80];
+            time_t t;
+            time(&t);
+            struct tm *pt = localtime(&t);
+            strftime(buf,80,"%F_%H_%M",pt);
+            timename_ = buf;
+        }
+
+        void writelog()
+        {
+            this->change();
+            //set filename
+            std::string fname;
+            if(choice_ == 1){
+                fname = "./log/"+this->filename_+".log";
+            }else if(choice_==2){
+                fname = this->filename_+this->timename_+".log";
+            }
+
+            try{
+                while(true){
+                    boost::this_thread::interruption_point();
+                    func_(fname,timespan_);
+                }
+            }catch(...){
+                Text_Log_Cache *cache = Text_Log_Cache::get_cache_ins();
+                cache->flash_cache();
+            }
+        }
+
+        void watch(int timeout)
+        {
+            while(timeout){
+                timeout -= timespan_;
+                boost::thread t(boost::bind(&WorkThread::writelog,this));
+                boost::this_thread::sleep(boost::posix_time::seconds(timespan_));
+                t.interrupt();
+            }
+        }
+
+        void run()
+        {
+            if(choice_==1){
+                boost::thread t(boost::bind(&WorkThread::writelog,this));
+                boost::this_thread::sleep(boost::posix_time::seconds(timeout_));
+                t.interrupt();
+            }else if(choice_==2){
+                boost::thread t(boost::bind(&WorkThread::watch,this,timeout_));
+                boost::this_thread::sleep(boost::posix_time::seconds(timeout_));
+                t.interrupt();
+            }
+        }
+
+    private:
+        int choice_;
+        int subtype_;
+        int timespan_;
+        int timeout_;
+        std::string filename_;
+        std::string timename_;
+        boost::function<void(const std::string&,int)> func_;
+
+};
+
+
+void test_tl_fast_log(const std::string& filename,int t)
+{
+
+    TextLogSplitTime type;
+
+    switch(t){
+        case 60:type = tlstMinute;
+                break;
+        case 3600:type = tlstHour;
+                  break;
+        case 86400:type = tlstDay;
+                   break;
+        default:
+                   printf("ERROR timespan!\n");
+    }
+
+    TL_FAST_LOG(filename.c_str(),type, "test:%s count:%d uid:%d",text_log, 3721, 1234);
+}
+
+//t --- no use
+void test_stt_error_log(const std::string& filename,int t)
+{
+    //printf("%s\n",filename.c_str());
+    STT_ERROR_LOG(0, filename.c_str(), STT_ADD_KEY_LOG("count", 3721 , "uid", 1234),
+            "test:%s", text_log);
+}
+
+void test_stt_debug_log(const std::string& filename,int t)
+{
+    //printf("%s\n",filename.c_str());
+    STT_DEBUG_LOG(filename.c_str(), STT_ADD_KEY_LOG("count", 3721 , "uid", 1234),
+            "test:%s", text_log);
+}
+
+void test_stt_info_log(const std::string& filename,int t)
+{
+    //printf("%s\n",filename.c_str());
+    STT_INFO_LOG(filename.c_str(), STT_ADD_KEY_LOG("count", 3721 , "uid", 1234),
+            "test:%s", text_log);
+}
+
+void test_stt_warn_log(const std::string& filename,int t)
+{
+    //printf("%s\n",filename.c_str());
+    STT_WARN_LOG(filename.c_str(), STT_ADD_KEY_LOG("count", 3721 , "uid", 1234),
+            "test:%s", text_log);
+}
+
+void test_stt_flow_log(const std::string& filename,int t)
+{
+    //printf("%s\n",filename.c_str());
+    STT_FLOW_LOG(filename.c_str(), STT_ADD_KEY_LOG("count", 3721 , "uid", 1234),
+            "test:%s", text_log);
+}
+
+
+int main(int argc, char *argv[])
+{
+    if(argc!=5){
+        printf("usage:%s choice(1|2) stt_type(1~5) timespan(60s|3600s|86400s) timeout(timer to stop.)\n",argv[0]);
+        return 1;
+    }
+    int choice = atoi(argv[1]);
+    int subtype = atoi(argv[2]);
+    int timespan = atoi(argv[3]);
+    int timeout = atoi(argv[4]);
+//bench singal file
+
+    std::string s = "test";
+
+
+    boost::timer timer;
+    WorkThread t(s,choice,subtype,timespan,timeout);
+
+    t.run();
+
+
+    printf("time elapsed:%lf\n",timer.elapsed());
+
+
+//becnh multi file
+/*
+    boost::function<void(int,int)> func;
+    if(choice==1){
+        func = bench_fast_multi_file_write;
+    }else if(choice == 2){
+        func = bench_stt_multi_file_write;
+    }
+
+    func(timespan,timeout);
+*/
+    return 0;
+}
+
+
+//write different level log
+void bench_stt_multi_file_write(int timepan,int timeout)
+{
+    boost::thread_group threadpool;
+    for(int i=0;i<MAX_COUNT;++i){//level
+        WorkThread t("bench",2,i+1,timepan,timeout);
+        threadpool.create_thread(boost::bind(&WorkThread::run,&t));
+    }
+    threadpool.join_all();
+}
+
+//write different filename
+void bench_fast_multi_file_write(int timespan,int timeout)
+{
+    boost::thread_group threadpool;
+    char str_idx[20];
+    strcpy(str_idx,"bench-");
+    int len = strlen(str_idx);
+    WorkThread (*ts)[MAX_COUNT];
+
+    for(int i=0;i<MAX_COUNT;++i){
+        sprintf(str_idx+len,"%d",i+1);
+        WorkThread t(str_idx,1,i+1,timespan,timeout);
+        threadpool.create_thread(boost::bind(&WorkThread::run,&t));
+    }
+    threadpool.join_all();
+}
